@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import json
 from datetime import datetime
 
 BASE_URL = "https://apim.workato.com/workatop329/workato-chatapi-v1"
