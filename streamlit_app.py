@@ -111,7 +111,7 @@ with tab2:  # Chat tab
             st.rerun()
 
     # Load selected chat history
-    if selected_chat and selected_chat != "New Chat":
+    if st.session_state.api_key and selected_chat and selected_chat != "New Chat":
         if st.session_state.current_chat_id != selected_chat:
             st.session_state.current_chat_id = selected_chat
             history = make_request("GET", "/agents/chats/history", params={"chat_id": selected_chat})
