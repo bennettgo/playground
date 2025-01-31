@@ -319,7 +319,14 @@ else:
                         payload = {
                             "agent_id": selected_agent,
                             "user_email": "user@example.com",  # or from user input
-                            "user_message": prompt
+                            "incoming_steps": [
+                                {
+                                    "payload": {
+                                        "step_type": "human_message",
+                                        "content": prompt
+                                    }
+                                }
+                            ]
                         }
                         if st.session_state.current_chat_id:
                             payload["chat_id"] = st.session_state.current_chat_id
