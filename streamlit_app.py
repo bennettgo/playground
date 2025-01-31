@@ -35,6 +35,14 @@ def init_session_state():
     # 'list' to show conversation list, 'details' to show a single conversation
     if 'chat_view' not in st.session_state:
         st.session_state.chat_view = 'list'
+    # For Function Registries
+    if 'selected_function_registry_id' not in st.session_state:
+        st.session_state.selected_function_registry_id = None
+    if 'function_registry_view' not in st.session_state:
+        st.session_state.function_registry_view = 'list'
+    if 'show_create_function_registry_modal' not in st.session_state:
+        st.session_state.show_create_function_registry_modal = False
+
 
 init_session_state()
 
@@ -93,7 +101,7 @@ else:
     ############################################################
     # Main Tabs (only show if we have an API key)
     ############################################################
-    tab1, tab2, tab3, tab4 = st.tabs(["Agents", "Chat", "Knowledge Bases", "Search"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Agents", "Chat", "Functions", "Knowledge Bases", "Search"])
 
     ############################################################
     # Tab 1 - Agent Management
@@ -104,6 +112,15 @@ else:
         # Fetch all agents
         agents_response = make_request("GET", "/agents")
         agent_records = agents_response.get("Records", [])
+
+        # Also fetch function registries for picklist
+        func_registries_resp = make_request("GET", "/functions")
+        registry_list = func_registries_resp.get("function_registries", [])
+        # We'll store them as { ID: ID } for a selectbox, or { ID: Name } if you have a name field
+        registry_map = {}
+        for reg in registry_list:
+            rid = reg.get("function_registry_id", "")
+            registry_map[rid] = rid  # or reg.get("name", rid)
 
         # Function to parse knowledge field
         def parse_agent_knowledge(agent_record):
@@ -131,7 +148,7 @@ else:
                 for agent in agent_records:
                     kb_list = parse_agent_knowledge(agent)
                     with st.container():
-                        col1, col2 = st.columns([2,3])
+                        col1, col2 = st.columns([5,3])
                         with col1:
                             st.markdown(f"**Name**: {agent.get('Agent_Name', '')}")
                             st.markdown(f"**ID**: {agent.get('Agent_ID', '')}")
@@ -141,6 +158,9 @@ else:
                                 st.markdown(f"**Knowledge Bases**: {', '.join(kb_list)}")
                             else:
                                 st.markdown("**Knowledge Bases**: None")
+                            # If you show function_registry_id, you can do so here:
+                            fr_id = agent.get("functions", None)
+                            st.markdown(f"**Function Registry**: {fr_id if fr_id else 'None'}")
                         with col2:
                             if st.button("Edit", key=f"edit_{agent['Agent_ID']}"):
                                 open_create_agent_modal(
@@ -150,7 +170,8 @@ else:
                                         'agent_name': agent.get('Agent_Name', ''),
                                         'agent_description': agent.get('description', ''),
                                         'agent_instruction': agent.get('instruction', ''),
-                                        'knowledge_bases': kb_list
+                                        'knowledge_bases': kb_list,
+                                        'functions': agent.get("functions", "")
                                     }
                                 )
                         st.markdown("---")
@@ -193,6 +214,15 @@ else:
                     default=st.session_state.edit_agent_data.get('knowledge_bases', [])
                 )
 
+                selected_registry_id = st.selectbox(
+                    "Select Function Registry",
+                    options=["None"] + list(registry_map.keys()),
+                    index=0
+                    if not st.session_state.edit_agent_data.get("functions")
+                    else (list(registry_map.keys()).index(st.session_state.edit_agent_data.get("functions")) + 1),
+                    format_func=lambda x: x if x != "None" else "None"
+                )
+
                 submitted = st.form_submit_button("Save")
                 if submitted:
                     upsert_data = {
@@ -203,6 +233,9 @@ else:
                     }
                     if agent_id:
                         upsert_data["agent_id"] = agent_id
+                    
+                    if selected_registry_id != "None":
+                        upsert_data["function_registry_id"] = selected_registry_id
 
                     resp = make_request("PUT", "/agents", data=upsert_data)
                     if "agent_id" in resp:
@@ -293,7 +326,7 @@ else:
 
                 elif st.session_state.chat_view == 'details':
                     # Show the conversation detail
-                    st.button("← Back", on_click=back_to_list)
+                    st.button("← Back", on_click=back_to_list, key="back_chat")
                     if st.session_state.current_chat_id:
                         st.subheader(f"Conversation: {st.session_state.current_chat_id}")
                     else:
@@ -334,23 +367,214 @@ else:
                         response = make_request("POST", "/agents/chats/send", data=payload)
 
                         if "agent_response" in response:
-                            for resp in response["agent_response"]:
-                                st.session_state.messages.append({
-                                    "role": "assistant",
-                                    "content": resp.get("content", ""),
-                                    "timestamp": datetime.now().isoformat()
-                                })
+                            # Put the initial list of agent responses in a variable
+                            agent_responses = response["agent_response"]
 
-                            # If new chat, store chat ID
-                            if "chat_id" in response and not st.session_state.current_chat_id:
-                                st.session_state.current_chat_id = response["chat_id"]
+                            # Loop until there are no more agent_responses left to process
+                            while agent_responses:
+                                new_agent_responses = []
+
+                                # Process each response in this batch
+                                for resp in agent_responses:
+                                    # 1) If this response has plain text content, show it
+                                    if resp.get("content", ""):
+                                        st.session_state.messages.append({
+                                            "role": "assistant",
+                                            "content": resp.get("content", ""),
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+
+                                    # 2) Check for a tool call
+                                    tool_call_id = resp.get("tool_call_id", "")
+                                    tool_call_name = resp.get("tool_call_name", "")
+                                    if tool_call_id:
+                                        tool_payload = {
+                                            "verb": resp.get("APIM_VERB", ""),
+                                            "endpoint": resp.get("APIM_ENDPOINT", ""),
+                                            "tool_call_id": tool_call_id,
+                                            "tool_call_name": tool_call_name,
+                                            "args": resp.get("args", ""),
+                                            "function_registry_id": resp.get("Function_registry_id", "")
+                                        }
+                                        
+                                        # Execute the tool call (in your example, we mock a response)
+                                        tool_response = make_request("POST", "/tools/execute", data=tool_payload)
+                                        # tool_response = ["confluence"]  # placeholder or real response
+
+                                        # Send the tool result back to the conversation
+                                        send_tool_resp_payload = {
+                                            "agent_id": selected_agent,
+                                            "chat_id": st.session_state.current_chat_id,
+                                            "user_email": "user@example.com",
+                                            "incoming_steps": [
+                                                {
+                                                    "payload": {
+                                                        "step_type": "tool_execution_response",
+                                                        "tool_call_id": f"{tool_call_id}",
+                                                        "content": f"{tool_response}"
+                                                    }
+                                                }
+                                            ]
+                                        }
+                                        followup_response = make_request("POST", "/agents/chats/send", data=send_tool_resp_payload)
+
+                                        # Locally display that the function was called
+                                        st.session_state.messages.append({
+                                            "role": "assistant",
+                                            "content": f"`Executed function - {tool_call_name}`",
+                                            "timestamp": datetime.now().isoformat()
+                                        })
+
+                                        # 3) The follow-up may include further agent_responses (tool calls, text, etc.)
+                                        #    Collect them to process on the next iteration
+                                        if "agent_response" in followup_response:
+                                            new_agent_responses.extend(followup_response["agent_response"])
+
+                                # Update agent_responses with all new ones discovered on this pass
+                                agent_responses = new_agent_responses
+
+                        # If new chat, store chat ID
+                        if "chat_id" in response and not st.session_state.current_chat_id:
+                            st.session_state.current_chat_id = response["chat_id"]
 
                         st.rerun()
 
     ############################################################
-    # Tab 3 - Knowledge Bases
+    # Tab 3 - Function Registries
     ############################################################
     with tab3:
+        st.header("Function Registries")
+
+        def load_function_registries():
+            return make_request("GET", "/functions")
+
+        def load_function_registry_swagger(function_registry_id):
+            return requests.request(
+                method="GET",
+                url=f"{BASE_URL}/functions/swagger",
+                headers={"API-Token": st.session_state.api_key},
+                params={"function_registry_id": function_registry_id}
+            )
+        def load_registry_functions(registry_id):
+            # new function to get function list
+            return make_request("GET", "/functions/function-list", params={"function_registry_id": registry_id})
+
+        def back_to_registry_list():
+            st.session_state.function_registry_view = 'list'
+            st.session_state.selected_function_registry_id = None
+
+        # create function registry modal triggers
+        def open_create_function_registry_modal():
+            st.session_state.show_create_function_registry_modal = True
+
+        def close_create_function_registry_modal():
+            st.session_state.show_create_function_registry_modal = False
+
+        if st.session_state.function_registry_view == 'list':
+            st.subheader("List of Function Registries")
+
+            registry_response = load_function_registries()
+            registry_list = registry_response.get("function_registries", [])
+
+            if not registry_list:
+                st.info("No function registries found.")
+            else:
+                for registry in registry_list:
+                    with st.container():
+                        registry_id = registry.get("function_registry_id", "")
+                        st.markdown(f"**Registry ID:** {registry_id}")
+                        st.markdown(f"**Created at:** {registry.get('created_at', '')}")
+                        st.markdown(f"**Updated at:** {registry.get('updated_at', '')}")
+                        if st.button("View Details", key=f"view_{registry_id}"):
+                            st.session_state.selected_function_registry_id = registry_id
+                            st.session_state.function_registry_view = 'details'
+                            st.rerun()
+                        st.markdown("---")
+
+            if st.button("Upsert Function Registry"):
+                open_create_function_registry_modal()
+
+            if st.session_state.show_create_function_registry_modal:
+                st.write("---")
+                st.subheader("Upsert Function Registry")
+                with st.form("create_function_registry_form"):
+                    new_registry_id = st.text_input("Enter Registry ID (unique). Provide an existing ID to update it.")
+                    new_registry_api_token = st.text_input("Enter API Token", type="password")
+                    swagger_file = st.file_uploader("Upload Swagger JSON", type=["json"])
+
+                    submitted = st.form_submit_button("Create")
+                    if submitted:
+                        if not new_registry_id:
+                            st.error("Registry ID is required")
+                        elif not new_registry_api_token:
+                            st.error("API Token is required")
+                        elif not swagger_file:
+                            st.error("Swagger file is required")
+                        else:
+                            try:
+                                swagger_content = swagger_file.read().decode("utf-8")
+                                upsert_data = {
+                                    "function_registry_id": new_registry_id,
+                                    "api_token": new_registry_api_token,
+                                    "swagger": swagger_content
+                                }
+                                resp = make_request("POST", "/functions/upsert", data=upsert_data)
+                                if "function_registry_id" in resp:
+                                    st.success(f"Function Registry '{resp['function_registry_id']}' created successfully!")
+                                    close_create_function_registry_modal()
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error creating function registry: {resp.get('message', 'Unknown error')}")
+                            except Exception as e:
+                                st.error(f"Error reading swagger file: {str(e)}")
+
+                if st.button("Cancel", key="cancel_create"):
+                    close_create_function_registry_modal()
+                    st.rerun()
+
+        elif st.session_state.function_registry_view == 'details':
+            registry_id = st.session_state.selected_function_registry_id
+            st.button("← Back", on_click=back_to_registry_list, key="back_registry")
+            st.subheader(f"Function Registry Details: {registry_id}") 
+
+            # Display a download link for swagger
+            if registry_id:
+                swagger_response = load_function_registry_swagger(registry_id)
+                if swagger_response.ok:
+                    try:
+                        # It's possible the swagger is a raw JSON
+                        swagger_text = swagger_response.text
+                        # Provide a download button
+                        b64 = base64.b64encode(swagger_text.encode()).decode()
+                        href = f'<a href="data:application/json;base64,{b64}" download="{registry_id}_swagger.json">Download Swagger</a>'
+                        st.markdown(href, unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"Error processing swagger: {str(e)}")
+                else:
+                    st.warning("Unable to load swagger for this registry.")
+
+                function_list_resp = load_registry_functions(registry_id)
+                if "chat_functions" in function_list_resp:
+                    st.write("### Functions in this registry")
+                    for fn_obj in function_list_resp["chat_functions"]:
+                        fn_data = fn_obj.get("chat_function", {})
+                        with st.expander(f"{fn_data.get('name', 'Unknown')} (ID: {fn_data.get('id', '')})"):
+                            st.write(f"**Description**: {fn_data.get('description', '')}")
+                            imd = fn_data.get('internal_metadata', {})
+                            st.write("**HTTP Verb**:", imd.get('verb', ''))
+                            st.write("**Endpoint**:", imd.get('apim_endpoint', ''))
+                            st.write("**Input Schema**:")
+                            st.json(fn_data.get('input_schema', {}))
+                            st.write("**Output Schema**:")
+                            st.json(fn_data.get('output_schema', {}))
+                else:
+                    st.info("No functions found in this registry.")
+
+            st.info("API token is not shown. Go to Workato AHQ Product if you want to see that.")
+    ############################################################
+    # Tab 4 - Knowledge Bases
+    ############################################################
+    with tab4:
         st.header("Knowledge Base Management")
 
         with st.expander("Create Knowledge Base"):
@@ -450,9 +674,9 @@ else:
                     st.markdown("---")
 
     ############################################################
-    # Tab 4 - Search
-    ############################################################
-    with tab4:
+    # Tab 5 - Search
+    ###########################################################
+    with tab5:
         st.header("Knowledge Search")
 
         kb_all_data = make_request("GET", "/knowledge")
