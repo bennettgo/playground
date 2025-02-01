@@ -108,6 +108,7 @@ else:
     ############################################################
     with tab1:
         st.header("Agent Management")
+        st.info("Give your agent instructions, knowledge and functions. Then chat with it in the next tab.")
 
         # Fetch all agents
         agents_response = make_request("GET", "/agents")
@@ -472,6 +473,8 @@ else:
 
         if st.session_state.function_registry_view == 'list':
             st.subheader("List of Function Registries")
+            st.info("View existing registries of API collections. To create your own, download the swagger and upload it here with an API token.")
+            st.divider()
 
             registry_response = load_function_registries()
             registry_list = registry_response.get("function_registries", [])
