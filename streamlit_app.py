@@ -73,7 +73,7 @@ def make_request(method, endpoint, data=None, params=None):
 with st.sidebar:
     st.header("API Configuration")
     st.session_state.api_key = st.text_input("API Key", type="password")
-    st.info("Contact Bennett Goh for a key")
+    st.info("Contact Bennett Goh (or Neil in the likely scenario Bennett is busy) for a key")
     st.markdown("---")
     st.markdown("**Current Session**")
     st.write(f"Active Chat: {st.session_state.current_chat_id or 'None'}")
@@ -618,16 +618,16 @@ else:
             existing_docs = []  # placeholder
 
             uploaded_file = st.file_uploader(
-                "Upload ZIP File",
-                type=["zip"],
+                "Upload your file",
+                type=["txt","json", "csv"],
                 accept_multiple_files=False,
-                help="ZIP filename will be used as document ID (special characters converted to underscores)"
+                help="Filename will be used as document ID (special characters converted to underscores). No pdfs for now."
             )
 
             custom_id = st.text_input("Custom Document ID (optional)",
                                       help="Override auto-generated ID from filename")
 
-            if st.button("📤 Upload ZIP") and uploaded_file is not None:
+            if st.button("📤 Upload File") and uploaded_file is not None:
                 try:
                     if custom_id:
                         document_id = custom_id
@@ -643,8 +643,7 @@ else:
                         document_id = f"{original_id}_{suffix}"
                         suffix += 1
 
-                    zip_bytes = uploaded_file.getvalue()
-                    encoded_zip = base64.b64encode(zip_bytes).decode("utf-8")
+                    file_contents = uploaded_file.getvalue().decode("utf-8")
 
                     resp = make_request(
                         "PUT",
@@ -652,7 +651,7 @@ else:
                         data={
                             "document_id": document_id,
                             "knowledge_base_id": selected_kb_id,
-                            "document": encoded_zip
+                            "document": file_contents
                         }
                     )
 
